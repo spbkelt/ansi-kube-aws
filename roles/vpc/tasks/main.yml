@@ -1,0 +1,236 @@
+---
+
+- name:               Create VPC
+  ec2_vpc_net:
+    name:             "{{ vpc_name }}"
+    cidr_block:       "{{ vpc_cidr_block }}"
+    region:           "{{ aws_region }}"
+    state:            "present"
+    resource_tags:
+      Name: "{{ aws_region }}"
+      KubernetesClusterID: "{{ kubernetes_cluster_name }}"
+  register: my_vpc
+
+- name:               Set VPC ID in variable
+  set_fact:
+    vpc_id:           "{{ my_vpc.vpc.id }}"
+
+- ec2_group_facts:
+    filters:
+      vpc-id: "{{ vpc_id }}"
+      group-name: default
+  register: ec2_group
+
+- name: set default security group fact
+  set_fact:
+    default_sg_id: "{{ ec2_group.security_groups[0].group_id}}"  
+
+- name: Ensure tags are present on a resource
+  ec2_tag:
+    region: "{{ aws_region }}"
+    resource: "{{ default_sg_id }}"
+    state: present
+    tags:
+      KubernetesCluster: "{{ kubernetes_cluster_name }}"
+
+- name:               Create Public Subnet
+  ec2_vpc_subnet:
+    state:            "present"
+    vpc_id:           "{{ vpc_id }}"
+    cidr:             "{{ public_subnet_cidr }}"
+    az:               "{{ aws_region }}a"
+    region:           "{{ aws_region }}"
+    resource_tags:
+      Name:           "Public Subnet"
+      KubernetesCluster: "{{ kubernetes_cluster_name }}"
+  register: my_public_subnet
+
+- name:               Set Public Subnet ID in variable
+  set_fact:
+    public_subnet_id: "{{ my_public_subnet.subnet.id }}"
+
+- name:               Create Private Subnet
+  ec2_vpc_subnet:
+    state:            "present"
+    vpc_id:           "{{ vpc_id }}"
+    cidr:             "{{ private_subnet_cidr }}"
+    az:               "{{ aws_region }}a"
+    region:           "{{ aws_region }}"
+    resource_tags:
+      Name:           "Private Subnet"
+      KubernetesCluster: "{{ kubernetes_cluster_name }}"
+  register: my_private_subnet
+
+- name:               Set Private Subnet ID in variable
+  set_fact:
+    private_subnet_id: "{{ my_private_subnet.subnet.id }}"
+
+
+# Every VPC needs at least one Internet Gateway.
+# This component allows traffic between the VPC and the outside world.
+
+- name:               Create Internet Gateway for VPC
+  ec2_vpc_igw:
+    vpc_id:           "{{ vpc_id }}"
+    region:           "{{ aws_region }}"
+    state:            "present"
+  register: my_vpc_igw
+
+- name:               Set Internet Gateway ID in variable
+  set_fact:
+    igw_id:           "{{ my_vpc_igw.gateway_id }}"
+
+
+# Time to create the NAT Gateway.
+# As you can see, we attach a NAT Gateway to a public subnet.
+# This is where the service will be located.
+
+- name: Create NAT Gateway 
+  ec2_vpc_nat_gateway:
+    state: present
+    subnet_id: "{{ public_subnet_id }}"
+    wait: yes
+    region: "{{ aws_region }}"
+    if_exist_do_not_create: true
+  register: nat_gw
+
+- name: Set Nat Gateway ID in variable
+  set_fact:
+    nat_gateway_id: "{{ nat_gw.nat_gateway_id }}"
+
+# Now we set up the Route Tables.
+# We will have one RT for the public subnet,
+# and one for the private subnet.
+# You can see that the Route Table for the private subnet
+# will redirect default destinations to the NAT Gateway
+# and the Route Table for the public subnet will use the
+# Internet Gateway.
+# 
+# We don't see it here, but the Route Tables will also contain 
+# a route for resources inside the VPC, so that if we need 
+# to reach an internal resource, we don't go to the Internet
+# Gateway or the NAT Gateway.
+
+- name: Set up public subnet route table
+  ec2_vpc_route_table:
+    vpc_id: "{{ vpc_id }}"
+    region: "{{ aws_region }}"
+    tags:
+      Name: "Public"
+      KubernetesCluster: "{{ kubernetes_cluster_name }}"
+    subnets:
+      - "{{ public_subnet_id }}"
+    routes:
+      - dest: "0.0.0.0/0"
+        gateway_id: "{{ igw_id }}"
+
+- name: Set up private subnet route table
+  ec2_vpc_route_table:
+    vpc_id: "{{ vpc_id }}"
+    region: "{{ aws_region }}"
+    tags:
+      Name: "Private"
+      KubernetesCluster: "{{ kubernetes_cluster_name }}"
+    subnets:
+      - "{{ private_subnet_id }}"
+    routes:
+      - dest: "0.0.0.0/0"
+        gateway_id: "{{ nat_gateway_id }}"
+
+# Finally, let's create the Security Groups.
+# We will create two : one to attach to public instances,
+# and one to attach to private instances.
+
+- name: Create SSH Bastion Security Group
+  ec2_group:
+    name: "Bastion SSH SG"
+    description: "External SSH Access"
+    vpc_id: "{{ vpc_id }}"
+    region: "{{ aws_region }}"
+    rules:
+      - proto: "tcp"
+        from_port: "22"
+        to_port: "22"
+        cidr_ip: "{{ my_ip }}"
+  register: ssh_bastion_sg
+
+
+- name: Set SSH SG ID
+  set_fact:
+    ssh_bastion_sg_id: "{{ ssh_bastion_sg.group_id }}"
+
+- name: Create SSH Private Security Group
+  ec2_group:
+    name: "Private Instances SSH SG"
+    description: "Private Instances SSH SG"
+    vpc_id: "{{ vpc_id }}"
+    region: "{{ aws_region }}"
+    rules:
+      - proto: "tcp"
+        from_port: "22"
+        to_port: "22"
+        group_id: "{{ ssh_bastion_sg_id }}"
+  register: ssh_private_sg     
+
+- name: Set SSH Private SG ID
+  set_fact:
+    ssh_private_sg_id: "{{ ssh_private_sg.group_id }}"
+
+- name: Create k8s masters Security Group
+  ec2_group:
+    name: "k8s masters SG"
+    description: "k8s masters SG"
+    vpc_id: "{{ vpc_id }}"
+    region: "{{ aws_region }}"
+    rules:
+      - proto: "tcp"
+        from_port: "443"
+        to_port: "443"
+        cidr_ip: "{{ private_subnet_cidr }}"
+      - proto: "tcp"
+        from_port: "6443"
+        to_port: "6443"
+        cidr_ip: "{{ private_subnet_cidr }}"
+      - proto: "tcp"
+        from_port: "6783"
+        to_port: "6783"
+        cidr_ip: "{{ private_subnet_cidr }}"
+      - proto: "udp"
+        from_port: "6783"
+        to_port: "6784"
+        cidr_ip: "{{ private_subnet_cidr }}"
+  register: k8s_master_sg
+
+- name:               Set k8s master SG id in variable
+  set_fact:
+    k8s_master_sg_id:  "{{ k8s_master_sg.group_id }}"
+
+- name: Create k8s workers Security Group
+  ec2_group:
+    name: "k8s workers SG"
+    description: "k8s workers SG"
+    vpc_id: "{{ vpc_id }}"
+    region: "{{ aws_region }}"
+    rules:
+      - proto: "tcp"
+        from_port: "10250"
+        to_port: "10250"
+        cidr_ip: "{{ private_subnet_cidr }}"
+      - proto: "tcp"
+        from_port: "30000"
+        to_port: "32767"
+        cidr_ip: "{{ private_subnet_cidr }}"
+      - proto: "tcp"
+        from_port: "6783"
+        to_port: "6783"
+        cidr_ip: "{{ private_subnet_cidr }}"
+      - proto: "udp"
+        from_port: "6783"
+        to_port: "6784"
+        cidr_ip: "{{ private_subnet_cidr }}"
+  register: k8s_worker_sg
+
+- name:               Set k8s worker SG id in variable
+  set_fact:
+    k8s_worker_sg_id:  "{{ k8s_worker_sg.group_id }}"
+

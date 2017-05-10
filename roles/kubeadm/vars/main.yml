@@ -1,0 +1,16 @@
+---
+
+kubeadm_packages:
+  - curl
+  - apt-transport-https
+  - ca-certificates
+  - software-properties-common
+  - docker.io
+  - kubelet
+  - kubeadm
+  - kubectl
+  - kubernetes-cni
+  - nfs-common
+  - autofs
+  - rpcbind
+  - jq

@@ -1,0 +1,119 @@
+
+#
+# Example invocation:
+#    ansible-playbook cluster-create.yml -e "kubernetes_cluster_name=foo"
+#
+---
+  
+- hosts: "tag_Role_{{ kubernetes_cluster_name }}_masters"
+  become: true
+  pre_tasks:
+    - include_role: 
+        name: kubeadm
+  tasks:
+    - set_fact:
+        master_ip_address: "{{ master_ip_address_configured }}"
+      when: master_ip_address_configured is defined
+    
+    - set_fact:
+        master_ip_address: "{{ ansible_default_ipv4['address'] }}"
+      when: master_ip_address_configured is not defined
+    
+    - name: Save master_ip_address
+      shell: "echo master_ip_address{{ ':' }} {{ master_ip_address }} > inventory/{{ kubernetes_cluster_name }}/master_ip_address.yml"
+      delegate_to: 127.0.0.1
+      become: false
+      
+    - name: Place kubeadm config in main kubernetes config dir
+      copy:
+        src: roles/kubeadm/files/kubeadm.conf
+        dest: /etc/kubernetes/kubeadm.conf   
+        mode: 0744
+        owner: "{{ ami_user }}"
+
+    - name: Check kubeadm config exist
+      stat:
+        path: /etc/kubernetes/kubeadm.conf
+      register: kubeadm_config
+
+    # Implements Step 2 of http://kubernetes.io/docs/getting-started-guides/kubeadm/
+    # (2/4) Initializing your master
+    - name: Initialize master
+      command: kubeadm init --config=/etc/kubernetes/kubeadm.conf
+      args:
+        creates: /etc/kubernetes/pki # Not 100% sure that the creates clause is correct
+      register: master_init
+      tags:
+        - master
+        - init
+
+    - name: Check kubernetes API is running
+      command: kubectl cluster-info --kubeconfig /etc/kubernetes/admin.conf
+      register: apiserver_status
+      until: "'Kubernetes master is running' not in apiserver_status.stdout_lines"
+      retries: 3
+      delay: 5
+
+    # Implements Step 3 of http://kubernetes.io/docs/getting-started-guides/kubeadm/
+    # (3/4) Installing a pod network
+    - name: Install Weave Net CNI network
+      include_role:
+        name: cni
+      register: weave
+      when: apiserver_status is defined
+
+    - name: Get /etc/kubernetes/admin.conf from master
+      fetch:
+        src: /etc/kubernetes/admin.conf
+        dest: "inventory/{{ kubernetes_cluster_name }}/admin.conf"
+        flat: true
+      tags:
+        - master
+        - remote
+    
+    - name: Install weave daemonset
+      command: kubectl apply -f https://git.io/weave-kube-1.6 --kubeconfig /etc/kubernetes/admin.conf
+      register: weave_status
+
+- hosts: "tag_Role_{{ kubernetes_cluster_name }}_workers"
+  become: true
+  pre_tasks:
+    - include_role:
+        name: kubeadm
+    
+    - name: Upload kubeconfig
+      copy:
+        src: "inventory/{{ kubernetes_cluster_name }}/admin.conf"
+        dest: /etc/kubernetes/admin.conf
+        owner: "{{ ami_user }}"
+        mode: "0744"
+
+    - name: Read master_ip_address from file
+      include_vars: "inventory/{{ kubernetes_cluster_name }}/master_ip_address.yml"
+  tasks:
+    # Implements Step 3 of http://kubernetes.io/docs/getting-started-guides/kubeadm/
+    # (3/4) Installing a pod network
+    - name: Install Weave Net CNI network
+      include_role:
+        name: cni
+
+    - name: Get token from kubeadm
+      shell: kubeadm token list --kubeconfig /etc/kubernetes/admin.conf | grep -E '[0-9a-z]{6}\.[0-9a-z]{16}' -o
+      register: admission_join_token
+
+    - name: Set join token fact
+      set_fact:
+        admission_join_token: "{{ admission_join_token.stdout }}"
+      when: admission_join_token is defined
+    
+    # Implements Step 4 of http://kubernetes.io/docs/getting-started-guides/kubeadm/
+    # (4/4) Joining your nodes
+    - name: Join nodes to cluster
+      command: "kubeadm join --token {{ admission_join_token }} {{ master_ip_address }}:6443"
+      args:
+        creates: /etc/kubernetes/kubelet.conf # Not 100% sure that the creates clause is correct
+      register: node_join
+      tags:
+        - nodes
+        - join
+

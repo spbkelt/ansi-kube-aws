@@ -1,0 +1,28 @@
+---
+
+# AWS Credentials
+aws_region:     "us-east-1"
+
+#IAM settings
+iam_role_name: "kubernetes"
+
+#EC2 settings
+keypair_name: "aws_{{aws_region}}"
+image_id: "ami-f4cc1de2"
+ami_user: "ubuntu"
+
+master_instance_type: "t2.micro"
+worker_instance_type: "t2.micro"
+bastion_instance_type: "t2.nano"
+
+#Kubernetes settings
+kubernetes_cluster_name: "kubernetes"
+
+# VPC Information
+vpc_name:       "{{aws_region}}"
+vpc_cidr_block: "10.0.0.0/16"
+
+# Subnets
+public_subnet_cidr:  "10.0.0.0/24"
+private_subnet_cidr: "10.0.1.0/24"
+

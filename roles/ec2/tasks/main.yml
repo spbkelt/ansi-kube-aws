@@ -1,0 +1,127 @@
+---
+
+- ec2_group_facts:
+    filters:
+      vpc-id: "{{ vpc_id }}"
+      group_name: default
+  register: ec2_group
+
+- name: set default security group fact
+  set_fact: 
+    default_sg_id: "{{ ec2_group.security_groups[0].group_id}}"
+
+- name: Check if pub key exists
+  stat:
+    path: "~/.ssh/id_rsa_aws_{{ aws_region }}.pub"
+  register: ssh_pubkey
+
+- name: Generate keypair
+  command: "ssh-keygen -b 4096 -t rsa -f ~/.ssh/id_rsa_aws_{{ aws_region }} -q -N ''"
+  register: ssh_keypair
+  when: ssh_pubkey.stat.exists == False
+
+- name: Create an EC2 key
+  ec2_key:
+    name: "{{ keypair_name }}"
+    region: "{{ aws_region }}"
+    key_material: "{{ item }}"
+    state: present 
+  register: ec2_key
+  with_file: "~/.ssh/id_rsa_aws_{{ aws_region }}.pub"
+  when: ssh_keypair.changed
+
+- name: Create Bastion SSH instance
+  ec2:
+    key_name: "{{ keypair_name }}"
+    instance_type: "{{ bastion_instance_type }}"
+    image: "{{ image_id }}"
+    wait: yes
+    wait_timeout: 60
+    exact_count: 1
+    count_tag:
+       Name: bastion
+    instance_tags:
+       Name: bastion
+       KubernetesCluster: "{{ kubernetes_cluster_name }}"
+       Role: bastion
+    vpc_subnet_id: "{{ public_subnet_id }}"
+    group_id: "{{ ssh_bastion_sg_id }}"
+    assign_public_ip: yes
+    region: "{{ aws_region }}"
+    zone: us-east-1a
+  register: ec2_bastion
+    
+- name: Set bastion public IP
+  set_fact:
+    bastion_public_ip: "{{ ec2_bastion.tagged_instances[0].public_ip }}"
+
+- name: Create K8S Master instances
+  ec2:
+    key_name: "{{ keypair_name }}"
+    instance_type: "{{ master_instance_type }}"
+    image: "{{ image_id }}"
+    wait: yes
+    wait_timeout: 60
+    exact_count: 1
+    count_tag:
+       Name: "k8s-master-{{ item }}"
+    instance_tags:
+       Name: "k8s-master-{{ item }}"
+       KubernetesCluster: "{{ kubernetes_cluster_name }}"
+       Role: kubernetes_masters
+    monitoring: yes
+    vpc_subnet_id: "{{ private_subnet_id }}"
+    group_id: ["{{ default_sg_id }}", "{{ ssh_private_sg_id }}", "{{ k8s_master_sg_id }}" ]
+    assign_public_ip: no
+    region: "{{ aws_region }}"
+    instance_profile_name: "{{ iam_role_name }}"
+    user_data: |
+      #!/bin/bash
+      apt-get update
+      apt-get install -y python python-pip
+  with_items:
+     - 0
+  register: ec2_k8s_master_list
+
+- name: Add host to masters group
+  add_host:
+    name: "{{ ec2_k8s_master_list.results[0].tagged_instances[0].private_ip }}"
+    groups: kubernetes_masters
+  
+- name: Create k8s worker instances
+  ec2:
+    key_name: "{{ keypair_name }}"
+    instance_type: "{{ worker_instance_type }}"
+    image: "{{ image_id }}"
+    wait: yes
+    wait_timeout: 60
+    exact_count: 1
+    count_tag:
+       Name: "k8s-worker-{{ item }}"
+    instance_tags:
+       Name: "k8s-worker-{{ item }}"
+       KubernetesCluster: "{{ kubernetes_cluster_name }}"
+       Role: kubernetes_workers
+    monitoring: yes
+    vpc_subnet_id: "{{ private_subnet_id }}"
+    group_id: ["{{ default_sg_id }}", "{{ ssh_private_sg_id }}", "{{ k8s_worker_sg_id }}"  ]
+    assign_public_ip: no
+    region: "{{ aws_region }}"
+    instance_profile_name: "{{ iam_role_name }}"
+    user_data: |
+      #!/bin/bash
+      apt-get update
+      apt-get install -y python python-pip
+  with_items:
+     - 0
+     - 1
+  register: ec2_k8s_worker_list
+
+- name: Add host to workers group
+  add_host:
+    name: "{{ ec2_k8s_worker_list.results[item].tagged_instances[0].private_ip }}"
+    groups: kubernetes_nodes
+  with_items:
+    - 0
+    - 1
+

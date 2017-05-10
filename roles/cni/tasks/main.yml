@@ -1,0 +1,35 @@
+---
+- name: Check weave is installed
+  stat:
+    path: /usr/local/bin/weave
+  register: weave_status
+
+- name: Install Weave Net
+  get_url:
+    url: http://git.io/weave
+    dest: /usr/local/bin/weave
+    mode: 0744
+    owner: "{{ ami_user }}"
+  register: weave_net
+  when: not weave_status.stat.exists
+
+- name: Create /opt/cni/bin
+  file:
+    path: /opt/cni/bin
+    state: directory
+    mode: 0744
+    owner: "{{ ami_user }}"
+  when: weave_net is defined
+
+- name: Create /etc/cni/net.d/
+  file:
+    path: /etc/cni/net.d/
+    state: directory
+    mode: 0744
+    owner: "{{ ami_user }}"
+  when: weave_net is defined
+
+- name: Weave Net setup
+  command: weave setup
+  when: weave_net is defined
+

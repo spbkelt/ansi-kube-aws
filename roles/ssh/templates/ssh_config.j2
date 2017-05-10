@@ -1,0 +1,7 @@
+Host bastion
+  Hostname {{ bastion_public_ip }}
+  User {{ ami_user }}
+Host 10.0.1.*
+  User {{ ami_user }}
+  ProxyCommand ssh -o StrictHostKeyChecking=no -i ~/.ssh/id_rsa_aws_{{ aws_region }} {{ ami_user }}@{{ bastion_public_ip }} nc %h %p 
+  IdentityFile ~/.ssh/id_rsa_aws_{{ aws_region }}

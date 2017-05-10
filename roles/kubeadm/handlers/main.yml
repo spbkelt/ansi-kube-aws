@@ -1,0 +1,7 @@
+---
+# handlers file for kubeadm_install
+- name: restart kubelet
+  systemd:
+    state: restarted
+    daemon_reload: yes
+    name: kubelet

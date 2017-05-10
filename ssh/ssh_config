@@ -1,0 +1,7 @@
+Host bastion
+  Hostname 54.161.48.95
+  User ubuntu
+Host 10.0.1.*
+  User ubuntu
+  ProxyCommand ssh -o StrictHostKeyChecking=no -i ~/.ssh/id_rsa_aws_us-east-1 ubuntu@54.161.48.95 nc %h %p 
+  IdentityFile ~/.ssh/id_rsa_aws_us-east-1

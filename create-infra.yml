@@ -1,0 +1,12 @@
+---
+
+- hosts: local
+  roles:
+    - iam
+    - vpc
+    - ec2
+    - ssh
+  vars:
+    - name: "my_ip"
+      default: "0.0.0.0/0"
+

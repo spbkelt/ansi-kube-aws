@@ -1,0 +1,23 @@
+---
+
+- name: Create IAM role with custom trust relationship
+  iam:
+    iam_type: role
+    name: "{{ iam_role_name }}"
+    state: present
+    trust_policy:
+      Version: '2012-10-17'
+      Statement:
+      - Action: sts:AssumeRole
+        Effect: Allow
+        Principal:
+          Service: ec2.amazonaws.com
+
+
+- name: Create IAM inline policy
+  iam_policy:
+    state: present      
+    iam_type: role
+    iam_name: "{{ iam_role_name }}"    
+    policy_document: roles/iam/files/ec2_policy.json
+    policy_name: "Allow_EC2_ECR_EFS_S3"

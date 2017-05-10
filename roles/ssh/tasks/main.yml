@@ -1,0 +1,5 @@
+---
+
+- template:
+    src: roles/ssh/templates/ssh_config.j2
+    dest: ssh/ssh_config
